@@ -1,0 +1,460 @@
+#include "App1.h"
+
+App1::App1()
+{
+	//BaseApplication::BaseApplication();
+	heightMesh = nullptr;
+	sphere = nullptr;
+	orthoMesh = nullptr;
+	downSampleMesh = nullptr;
+	hBlurMesh = nullptr;
+	vBlurMesh = nullptr;
+	upSampleMesh = nullptr;
+
+	renderTexture = nullptr;
+	downSampled = nullptr;
+	hBlurred = nullptr;
+	vBlurred = nullptr;
+	finalBlurred = nullptr;
+
+	lightShader = nullptr;
+	textureShader = nullptr;
+	manipShader = nullptr;
+	hBlurShader = nullptr;
+	vBlurShader = nullptr;
+}
+
+void App1::init(HINSTANCE hinstance, HWND hwnd, int screenWidth, int screenHeight, Input *in)
+{
+	// Call super/parent init function (required!)
+	BaseApplication::init(hinstance, hwnd, screenWidth, screenHeight, in);
+
+	// Create Mesh object
+	heightMesh = new PlaneMesh(renderer->getDevice(), renderer->getDeviceContext());
+	sphere = new SphereMesh(renderer->getDevice(), renderer->getDeviceContext());
+
+	// Initialise all the shaders
+	textureShader = new TextureShader(renderer->getDevice(), hwnd);
+	lightShader = new LightShader(renderer->getDevice(), hwnd);
+	manipShader = new ManipulationShader(renderer->getDevice(), hwnd);
+	hBlurShader = new HorizontalBlurShader(renderer->getDevice(), hwnd);
+	vBlurShader = new VerticalBlurShader(renderer->getDevice(), hwnd);
+
+	// Load Textures
+	textureMgr->loadTexture("heightmap", L"../res/height.png");
+	textureMgr->loadTexture("skeletor", L"../res/skeletor.png");
+
+	// Define the lights
+	lights[0] = new Light;
+	lights[0]->setPosition(0.0f, 10.0f, 0.0f);
+	lights[0]->setDiffuseColour(1.0f, 0.0f, 0.0f, 1.0f);
+	lights[0]->setAmbientColour(0.2f, 0.2f, 0.2f, 1.0f);
+	lights[0]->setSpecularColour(1.0f, 1.0f, 1.0f, 1.0f);
+	lights[0]->setSpecularPower(1.0f);
+
+	lights[1] = new Light;
+	lights[1]->setPosition(0.0f, 10.0f, 0.0f);
+	lights[1]->setDiffuseColour(0.0f, 1.0f, 0.0f, 1.0f);
+
+	// Create the RenderTexture for the top right view
+	renderTexture = new RenderTexture(renderer->getDevice(), screenWidth, screenHeight, SCREEN_NEAR, SCREEN_DEPTH);
+
+	// Create the RenderTextures for the blurring
+	downSampled = new RenderTexture(renderer->getDevice(), screenWidth / 2, screenHeight / 2, SCREEN_NEAR, SCREEN_DEPTH);
+	hBlurred = new RenderTexture(renderer->getDevice(), screenWidth, screenHeight, SCREEN_NEAR, SCREEN_DEPTH);
+	vBlurred = new RenderTexture(renderer->getDevice(), screenWidth, screenHeight, SCREEN_NEAR, SCREEN_DEPTH);
+	finalBlurred = new RenderTexture(renderer->getDevice(), screenWidth, screenHeight, SCREEN_NEAR, SCREEN_DEPTH);
+
+	// Create the orthomeshes for blurring
+	downSampleMesh = new OrthoMesh(renderer->getDevice(), renderer->getDeviceContext(), screenWidth / 2, screenHeight / 2);
+	hBlurMesh = new OrthoMesh(renderer->getDevice(), renderer->getDeviceContext(), screenWidth, screenHeight);
+	vBlurMesh = new OrthoMesh(renderer->getDevice(), renderer->getDeviceContext(), screenWidth, screenHeight);
+	upSampleMesh = new OrthoMesh(renderer->getDevice(), renderer->getDeviceContext(), screenWidth * 2, screenHeight * 2);
+
+
+	// ortho size and position set based on window size
+	// Position default at 0x0 centre window, to offset change values (pixel)
+	orthoMesh = new OrthoMesh(renderer->getDevice(), renderer->getDeviceContext(), 500, 300, 300, 225);
+
+	// Define misc. variables
+	rot = 0.0f;
+	swing = 0.1f;
+	swingUp = true;
+
+	blur = false;
+}
+
+
+App1::~App1()
+{
+	// Run base application deconstructor
+	BaseApplication::~BaseApplication();
+
+	// Release the Direct3D object.
+	if (heightMesh)
+	{
+		delete heightMesh;
+		heightMesh = 0;
+	}
+
+	if (sphere)
+	{
+		delete sphere;
+		sphere = 0;
+	}
+
+	if (orthoMesh)
+	{
+		delete orthoMesh;
+		orthoMesh = 0;
+	}
+
+	if (downSampleMesh)
+	{
+		delete downSampleMesh;
+		downSampleMesh = 0;
+	}
+
+	if (hBlurMesh)
+	{
+		delete hBlurMesh;
+		hBlurMesh = 0;
+	}
+
+	if (vBlurMesh)
+	{
+		delete vBlurMesh;
+		vBlurMesh = 0;
+	}
+
+	if (upSampleMesh)
+	{
+		delete upSampleMesh;
+		upSampleMesh = 0;
+	}
+
+	if (lightShader)
+	{
+		delete lightShader;
+		lightShader = 0;
+	}
+
+	if (manipShader)
+	{
+		delete manipShader;
+		manipShader = 0;
+	}
+
+	if (textureShader)
+	{
+		delete textureShader;
+		textureShader = 0;
+	}
+
+	if (hBlurShader)
+	{
+		delete hBlurShader;
+		hBlurShader = 0;
+	}
+
+	if (vBlurShader)
+	{
+		delete vBlurShader;
+		vBlurShader = 0;
+	}
+}
+
+
+bool App1::frame()
+{
+	bool result;
+
+	result = BaseApplication::frame();
+	if (!result)
+	{
+		return false;
+	}
+
+	// Render the graphics.
+	result = render();
+	if (!result)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool App1::render()
+{
+	// Render the scene to the RenderTexture
+	RenderToTexture();
+
+	// Render the blurred scene to a texture
+	if (blur) {
+		DownSample();
+		ApplyHBlur();
+		ApplyVBlur();
+		UpSample();
+	}
+	// Render the scene to the screen
+	RenderScene();
+	return true;
+}
+
+void App1::RenderScene()
+{
+	XMMATRIX worldMatrix, viewMatrix, projectionMatrix, orthoViewMatrix, orthoMatrix;
+
+	// Change the rotation transform every frame
+	rot += 0.01f;
+
+	// Give the effect of swinging back and forth
+	if(swing >= 10.0f || swing <= -10.0f)
+	{
+		swingUp = !swingUp;
+	}
+
+	if (swingUp) 
+	{
+		swing += 0.1f;
+	}
+	else
+	{
+		swing -= 0.1f;
+	}
+	
+
+	//// Clear the scene. (default blue colour)
+	renderer->beginScene(0.39f, 0.58f, 0.92f, 1.0f);
+
+	//// Generate the view matrix based on the camera's position.
+	camera->update();
+
+	lights[1]->setPosition(swing, 10.0f, swing);
+
+	//// Get the world, view, projection, and ortho matrices from the camera and Direct3D objects.
+	worldMatrix = renderer->getWorldMatrix();
+	viewMatrix = camera->getViewMatrix();
+	projectionMatrix = renderer->getProjectionMatrix();
+
+
+	worldMatrix = XMMatrixTranslation(-45.0f, -10.0f, -45.0f);
+
+	//Send geometry data (from mesh)
+	heightMesh->sendData(renderer->getDeviceContext());
+	// Set shader parameters (matrices and texture)
+	manipShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, viewMatrix, projectionMatrix, textureMgr->getTexture("default"), lights, camera->getPosition(), textureMgr->getTexture("heightmap"));
+	//Render object (combination of mesh geometry and shader process
+	manipShader->render(renderer->getDeviceContext(), heightMesh->getIndexCount());
+	
+	
+	worldMatrix = renderer->getWorldMatrix();
+	worldMatrix = XMMatrixMultiply(XMMatrixRotationRollPitchYaw(0.0f, -5*rot, 0.0f), XMMatrixMultiply(XMMatrixTranslation(10.0f, 0.0f, 0.0f), XMMatrixRotationRollPitchYaw(0.0f, rot, 0.0f)));
+
+	sphere->sendData(renderer->getDeviceContext());
+	lightShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, viewMatrix, projectionMatrix, textureMgr->getTexture("skeletor"), lights, camera->getPosition());
+	lightShader->render(renderer->getDeviceContext(), sphere->getIndexCount());
+
+	worldMatrix = renderer->getWorldMatrix();
+
+	// To render ortho mesh
+	// Turn off the Z buffer to begin all 2D rendering.
+	renderer->setZBuffer(false);
+	if (renderer->getWireframeState()) {		// Makes sure the orthomesh is never wireframed
+		// ortho matrix for 2D rendering
+		renderer->setWireframeMode(false);
+		orthoMatrix = renderer->getOrthoMatrix();
+		orthoViewMatrix = camera->getOrthoViewMatrix();
+		orthoMesh->sendData(renderer->getDeviceContext());
+		if (blur)								// Applies blur
+		{
+			textureShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, finalBlurred->getShaderResourceView());
+		}
+		else 
+		{
+			textureShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, renderTexture->getShaderResourceView());
+		}
+		textureShader->render(renderer->getDeviceContext(), orthoMesh->getIndexCount());
+		renderer->setWireframeMode(true);
+	} else 
+	{
+		orthoMatrix = renderer->getOrthoMatrix();
+		orthoViewMatrix = camera->getOrthoViewMatrix();
+		orthoMesh->sendData(renderer->getDeviceContext());
+		if (blur)
+		{
+			textureShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, finalBlurred->getShaderResourceView());
+		}
+		else
+		{
+			textureShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, renderTexture->getShaderResourceView());
+		}
+		textureShader->render(renderer->getDeviceContext(), orthoMesh->getIndexCount());
+	}
+	renderer->setZBuffer(true);
+
+	gui();
+
+	// Present the rendered scene to the screen.
+	renderer->endScene();
+}
+
+// Halves the size of the renderTexture
+void App1::DownSample()
+{
+	XMMATRIX worldMatrix, orthoViewMatrix, orthoMatrix;
+	// Sets render target to a rendertexture which is half the size of the screen
+	downSampled->setRenderTarget(renderer->getDeviceContext());
+	downSampled->clearRenderTarget(renderer->getDeviceContext(), 0.0f, 0.0f, 1.0f, 1.0f);
+
+	camera->update();
+	// Get the world, view, and projection matrices from the camera and d3d objects.
+	worldMatrix = renderer->getWorldMatrix();
+	orthoMatrix = renderer->getOrthoMatrix();
+	orthoViewMatrix = camera->getOrthoViewMatrix();
+
+	renderer->setZBuffer(false);
+
+	downSampleMesh->sendData(renderer->getDeviceContext());
+
+	textureShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, renderTexture->getShaderResourceView());
+	textureShader->render(renderer->getDeviceContext(), downSampleMesh->getIndexCount());
+
+	renderer->setBackBufferRenderTarget();
+}
+
+// Applies the horizontal blur to the downsampled texture
+void App1::ApplyHBlur()
+{
+	XMMATRIX worldMatrix, orthoViewMatrix, orthoMatrix;
+
+	hBlurred->setRenderTarget(renderer->getDeviceContext());
+	hBlurred->clearRenderTarget(renderer->getDeviceContext(), 0.0f, 0.0f, 1.0f, 1.0f);
+
+	camera->update();
+	// Get the world, view, and projection matrices from the camera and d3d objects.
+	worldMatrix = renderer->getWorldMatrix();
+	orthoMatrix = renderer->getOrthoMatrix();
+	orthoViewMatrix = camera->getOrthoViewMatrix();
+
+
+	hBlurMesh->sendData(renderer->getDeviceContext());
+
+	hBlurShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, downSampled->getShaderResourceView(), downSampled->getTextureWidth());
+	hBlurShader->render(renderer->getDeviceContext(), hBlurMesh->getIndexCount());
+
+
+	renderer->setBackBufferRenderTarget();
+}
+
+// Applies the vertical blur to the hblurred texture
+void App1::ApplyVBlur()
+{
+	XMMATRIX worldMatrix, orthoViewMatrix, orthoMatrix;
+
+	vBlurred->setRenderTarget(renderer->getDeviceContext());
+	vBlurred->clearRenderTarget(renderer->getDeviceContext(), 0.0f, 0.0f, 1.0f, 1.0f);
+
+	camera->update();
+	// Get the world, view, and projection matrices from the camera and d3d objects.
+	worldMatrix = renderer->getWorldMatrix();
+	orthoMatrix = renderer->getOrthoMatrix();
+	orthoViewMatrix = camera->getOrthoViewMatrix();
+
+
+	vBlurMesh->sendData(renderer->getDeviceContext());
+
+	vBlurShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, hBlurred->getShaderResourceView(), hBlurred->getTextureHeight());
+	vBlurShader->render(renderer->getDeviceContext(), vBlurMesh->getIndexCount());
+
+
+	renderer->setBackBufferRenderTarget();
+}
+
+// Upsamples the blurred image to the original screen size
+void App1::UpSample()
+{
+	XMMATRIX worldMatrix, orthoViewMatrix, orthoMatrix;
+
+	finalBlurred->setRenderTarget(renderer->getDeviceContext());
+	finalBlurred->clearRenderTarget(renderer->getDeviceContext(), 0.0f, 0.0f, 1.0f, 1.0f);
+
+	camera->update();
+	// Get the world, view, and projection matrices from the camera and d3d objects.
+	worldMatrix = renderer->getWorldMatrix();
+	orthoMatrix = renderer->getOrthoMatrix();
+	orthoViewMatrix = camera->getOrthoViewMatrix();
+
+	renderer->setZBuffer(false);
+
+	upSampleMesh->sendData(renderer->getDeviceContext());
+
+	textureShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, orthoViewMatrix, orthoMatrix, vBlurred->getShaderResourceView());
+	textureShader->render(renderer->getDeviceContext(), upSampleMesh->getIndexCount());
+
+	renderer->setZBuffer(true);
+
+	renderer->setBackBufferRenderTarget();
+}
+
+void App1::gui()
+{
+
+	// Force turn off on Geometry shader
+	renderer->getDeviceContext()->GSSetShader(NULL, NULL, 0);
+
+	// Build UI
+	ImGui::Text("FPS: %.2f", timer->getFPS());
+
+	// Wireframe mode button
+	if (ImGui::Button("Wireframe Mode")) 
+	{
+		renderer->setWireframeMode(!renderer->getWireframeState());
+	}
+
+	// Blur Mode Button
+	if (ImGui::Button("Blur"))
+	{
+		blur = !blur;
+	}
+
+	// Render UI
+	ImGui::Render();
+}
+
+void App1::RenderToTexture()
+{
+	XMMATRIX worldMatrix, viewMatrix, projectionMatrix;
+	// Set the render target to be the render to texture.
+	renderTexture->setRenderTarget(renderer->getDeviceContext());
+	// Clear the render to texture.
+	renderTexture->clearRenderTarget(renderer->getDeviceContext(), 0.0f, 0.0f, 1.0f, 1.0f);
+	// Generate the view matrix based on the camera's position.
+	camera->update();
+	// Get the world, view, and projection matrices from the camera and d3d objects.
+	worldMatrix = renderer->getWorldMatrix();
+	viewMatrix = camera->getViewMatrix();
+	projectionMatrix = renderer->getProjectionMatrix();
+
+	// Put the model vertex and index buffers on the graphics pipeline to prepare them for drawing.
+	worldMatrix = XMMatrixTranslation(-45.0f, -10.0f, -45.0f);
+
+
+	//// Send geometry data (from mesh)
+	heightMesh->sendData(renderer->getDeviceContext());
+	//// Set shader parameters (matrices and texture)
+	manipShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, viewMatrix, projectionMatrix, textureMgr->getTexture("default"), lights, camera->getPosition(), textureMgr->getTexture("heightmap"));
+	//// Render object (combination of mesh geometry and shader process
+	manipShader->render(renderer->getDeviceContext(), heightMesh->getIndexCount());
+
+
+	worldMatrix = renderer->getWorldMatrix();
+	worldMatrix = XMMatrixMultiply(XMMatrixRotationRollPitchYaw(0.0f, -5 * rot, 0.0f), XMMatrixMultiply(XMMatrixTranslation(10.0f, 0.0f, 0.0f), XMMatrixRotationRollPitchYaw(0.0f, rot, 0.0f)));
+
+	sphere->sendData(renderer->getDeviceContext());
+	lightShader->setShaderParameters(renderer->getDeviceContext(), worldMatrix, viewMatrix, projectionMatrix, textureMgr->getTexture("skeletor"), lights, camera->getPosition());
+	lightShader->render(renderer->getDeviceContext(), sphere->getIndexCount());
+	// Reset the render target back to the original back buffer and not the render to texture anymore.
+	renderer->setBackBufferRenderTarget();
+}
